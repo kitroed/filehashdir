@@ -8,11 +8,12 @@ import argparse
 import curses
 import datetime
 import hashlib
+import multiprocessing
 import os
 import socket
 import sys
 import time
-from typing import Callable, NoReturn, Optional
+from typing import Callable, NoReturn, Optional, Any
 
 from sqlalchemy import Boolean, DateTime, Integer, String, create_engine, func, desc
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
@@ -75,6 +76,42 @@ def get_file_hash(file_path: str) -> str:
         return digest.hexdigest()
 
 
+def process_file_worker(args: tuple[str, str]) -> dict[str, Any]:
+    """
+    Worker function for multiprocessing. 
+    Args: (dir_path, file_name)
+    Returns: Dict with file data or error info.
+    """
+    dir_path, file_name = args
+    full_path = os.path.join(dir_path, file_name)
+    
+    result = {
+        "dir_path": dir_path,
+        "filename": file_name,
+        "full_path": full_path,
+        "extension": os.path.splitext(file_name)[1],
+        "error": None
+    }
+
+    try:
+        # Check if file exists (it was found by os.walk but race conditions happen)
+        if not os.path.isfile(full_path):
+            return result
+
+        stat = os.stat(full_path)
+        result["size"] = stat.st_size
+        result["modified"] = stat.st_mtime
+        result["created"] = stat.st_ctime
+        result["md5_hash"] = get_file_hash(full_path)
+        result["success"] = True
+        
+    except (PermissionError, FileNotFoundError, OSError) as e:
+        result["error"] = str(e)
+        result["success"] = False
+        
+    return result
+
+
 DEFAULT_IGNORE_DIRS = {
     ".git",
     "__pycache__",
@@ -109,63 +146,71 @@ def scan_and_hash_system(
     hostname = socket.gethostname()
     total_processed = 0
 
-    # Create session for the entire operation using compact context manager
-    with Session(engine) as session:
+    # Generator to yield file tasks
+    def file_task_generator():
         for dir_path, dir_names, file_names in os.walk(path):
             # Modify dir_names in-place to skip ignored directories
             dir_names[:] = [d for d in dir_names if d not in DEFAULT_IGNORE_DIRS]
-
-            files_in_dir_processed = 0
+            
             for file_name in file_names:
-                # Early skip by extension
                 _, ext = os.path.splitext(file_name)
                 if ext in DEFAULT_IGNORE_EXTS:
                     continue
+                yield (dir_path, file_name)
 
-                full_path = os.path.join(dir_path, file_name)
-
-                # Skip broken symlinks or special files if needed
-                if not os.path.isfile(full_path):
+    # Use multiprocessing to speed up hashing
+    # Using imap_unordered provides better UI responsiveness by yielding results 
+    # as soon as they complete, preventing large files from blocking the stream.
+    with Session(engine) as session:
+        # We use a multiprocessing.Pool to distribute the work
+        with multiprocessing.Pool() as pool:
+            
+            # Use imap_unordered to process results in completion order (fastest first)
+            # rather than submission order. This ensures the UI updates immediately 
+            # even if a large file takes a while to hash in the background.
+            results = pool.imap_unordered(process_file_worker, file_task_generator(), chunksize=20)
+            
+            # Process results
+            pending_commits = 0
+            
+            for res in results:
+                if not res.get("success"):
+                    if res.get("error") and verbose:
+                        print(f"Error accessing {res['full_path']}: {res['error']}")
                     continue
-
+                
+                # Create DB Object
                 file_obj = File(
                     host=hostname,
-                    path=dir_path,
-                    filename=file_name,
-                    full_path=full_path,
-                    extension=os.path.splitext(file_name)[1],
+                    path=res["dir_path"],
+                    filename=res["filename"],
+                    full_path=res["full_path"],
+                    extension=res["extension"],
+                    size=res["size"],
+                    modified=datetime.datetime.fromtimestamp(res["modified"]),
+                    created=datetime.datetime.fromtimestamp(res["created"]),
+                    md5_hash=res["md5_hash"],
                     last_checked=datetime.datetime.now(),
-                    can_read=False,
+                    can_read=True,
                 )
-
-                try:
-                    stat = os.stat(full_path)
-                    file_obj.size = stat.st_size
-                    file_obj.modified = datetime.datetime.fromtimestamp(stat.st_mtime)
-                    file_obj.created = datetime.datetime.fromtimestamp(stat.st_ctime)
-
-                    file_obj.md5_hash = get_file_hash(full_path)
-
-                    file_obj.last_checked = datetime.datetime.now()
-                    file_obj.can_read = True
-
-                    if verbose:
-                        print(file_obj)
-
-                except (PermissionError, FileNotFoundError, OSError) as e:
-                    if verbose:
-                        print(f"Error accessing {full_path}: {e}")
-                    continue
-
+                
+                if verbose:
+                    print(file_obj)
+                    
                 session.merge(file_obj)
-                files_in_dir_processed += 1
                 total_processed += 1
-
+                pending_commits += 1
+                
                 if progress_callback:
-                    progress_callback(file_name, total_processed)
+                    progress_callback(res["filename"], total_processed)
 
-            # Commit changes after each directory
-            if files_in_dir_processed > 0:
+                # Commit in batches of 100 to keep transaction size healthy
+                if pending_commits >= 100:
+                    session.commit()
+                    pending_commits = 0
+
+            # Final commit
+            if pending_commits > 0:
                 session.commit()
 
     return total_processed
