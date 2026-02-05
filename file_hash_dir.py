@@ -124,6 +124,33 @@ DEFAULT_IGNORE_DIRS = {
 DEFAULT_IGNORE_EXTS = {".pyc", ".o", ".tmp", ".swp", ".class"}
 
 
+def load_ignore_config(scan_path: str) -> tuple[set[str], set[str]]:
+    """
+    Load ignore rules from .filehashignore in the scan root.
+    Returns (ignore_dirs, ignore_exts).
+    """
+    ignore_dirs = set(DEFAULT_IGNORE_DIRS)
+    ignore_exts = set(DEFAULT_IGNORE_EXTS)
+    
+    config_path = os.path.join(scan_path, ".filehashignore")
+    if os.path.exists(config_path) and os.path.isfile(config_path):
+        try:
+            with open(config_path, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    
+                    if line.startswith("."):
+                        ignore_exts.add(line)
+                    else:
+                        ignore_dirs.add(line)
+        except Exception:
+            pass
+            
+    return ignore_dirs, ignore_exts
+
+
 def scan_and_hash_system(
     path: str,
     verbose: bool,
@@ -148,13 +175,15 @@ def scan_and_hash_system(
 
     # Generator to yield file tasks
     def file_task_generator():
+        ignore_dirs, ignore_exts = load_ignore_config(path)
+        
         for dir_path, dir_names, file_names in os.walk(path):
             # Modify dir_names in-place to skip ignored directories
-            dir_names[:] = [d for d in dir_names if d not in DEFAULT_IGNORE_DIRS]
+            dir_names[:] = [d for d in dir_names if d not in ignore_dirs]
             
             for file_name in file_names:
                 _, ext = os.path.splitext(file_name)
-                if ext in DEFAULT_IGNORE_EXTS:
+                if ext in ignore_exts:
                     continue
                 yield (dir_path, file_name)
 
@@ -204,8 +233,9 @@ def scan_and_hash_system(
                 if progress_callback:
                     progress_callback(res["filename"], total_processed)
 
-                # Commit in batches of 100 to keep transaction size healthy
-                if pending_commits >= 100:
+                # Commit in batches of 1000 to keep transaction size healthy
+                # Increased from 100 to reduce disk I/O blocking the main thread
+                if pending_commits >= 1000:
                     session.commit()
                     pending_commits = 0
 
