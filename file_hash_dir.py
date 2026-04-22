@@ -13,7 +13,8 @@ import os
 import socket
 import sys
 import time
-from typing import Callable, NoReturn, Optional, Any
+from collections.abc import Callable
+from typing import Any, NoReturn
 
 from sqlalchemy import Boolean, DateTime, Integer, String, create_engine, func, desc
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
@@ -35,14 +36,14 @@ class File(Base):
     full_path: Mapped[str] = mapped_column(String, primary_key=True)
     host: Mapped[str] = mapped_column(String(50))
     md5_hash: Mapped[str] = mapped_column(String(32))
-    path: Mapped[Optional[str]] = mapped_column(String)
-    size: Mapped[Optional[int]] = mapped_column(Integer)
-    filename: Mapped[Optional[str]] = mapped_column(String)
-    extension: Mapped[Optional[str]] = mapped_column(String)
-    modified: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime)
-    created: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime)
-    can_read: Mapped[Optional[bool]] = mapped_column(Boolean)
-    last_checked: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime)
+    path: Mapped[str | None] = mapped_column(String)
+    size: Mapped[int | None] = mapped_column(Integer)
+    filename: Mapped[str | None] = mapped_column(String)
+    extension: Mapped[str | None] = mapped_column(String)
+    modified: Mapped[datetime.datetime | None] = mapped_column(DateTime)
+    created: Mapped[datetime.datetime | None] = mapped_column(DateTime)
+    can_read: Mapped[bool | None] = mapped_column(Boolean)
+    last_checked: Mapped[datetime.datetime | None] = mapped_column(DateTime)
 
     def __repr__(self) -> str:
         """Return string representation of the File object."""
@@ -154,7 +155,7 @@ def load_ignore_config(scan_path: str) -> tuple[set[str], set[str]]:
 def scan_and_hash_system(
     path: str,
     verbose: bool,
-    progress_callback: Optional[Callable[[str, int], None]] = None,
+    progress_callback: Callable[[str, int], None] | None = None,
 ) -> int:
     """
     Scan and hash files in the system and store in database.
@@ -249,7 +250,7 @@ def scan_and_hash_system(
 # --- Reporting Functions ---
 
 
-def get_report_data() -> dict:
+def get_report_data() -> dict[str, Any]:
     """Query the database for summary statistics."""
     engine = get_db_engine()
     with Session(engine) as session:
