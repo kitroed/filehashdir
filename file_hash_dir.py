@@ -17,6 +17,7 @@ from collections.abc import Callable
 from typing import Any, NoReturn
 
 from sqlalchemy import Boolean, DateTime, Integer, String, create_engine, func, desc
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 from sqlalchemy.engine import Engine
 
@@ -152,6 +153,18 @@ def load_ignore_config(scan_path: str) -> tuple[set[str], set[str]]:
     return ignore_dirs, ignore_exts
 
 
+def _bulk_upsert_files(session: Session, rows: list[dict[str, Any]]) -> None:
+    """Insert or update a batch of file rows using SQLite's ON CONFLICT."""
+    stmt = sqlite_insert(File).values(rows)
+    update_cols = {c: stmt.excluded[c] for c in rows[0] if c != "full_path"}
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[File.full_path],
+        set_=update_cols,
+    )
+    session.execute(stmt)
+    session.commit()
+
+
 def scan_and_hash_system(
     path: str,
     verbose: bool,
@@ -189,60 +202,49 @@ def scan_and_hash_system(
                 yield (dir_path, file_name)
 
     # Use multiprocessing to speed up hashing
-    # Using imap_unordered provides better UI responsiveness by yielding results 
+    # Using imap_unordered provides better UI responsiveness by yielding results
     # as soon as they complete, preventing large files from blocking the stream.
     with Session(engine) as session:
-        # We use a multiprocessing.Pool to distribute the work
         with multiprocessing.Pool() as pool:
-            
-            # Use imap_unordered to process results in completion order (fastest first)
-            # rather than submission order. This ensures the UI updates immediately 
-            # even if a large file takes a while to hash in the background.
             results = pool.imap_unordered(process_file_worker, file_task_generator(), chunksize=20)
-            
-            # Process results
-            pending_commits = 0
-            
+
+            batch: list[dict[str, Any]] = []
+
             for res in results:
                 if not res.get("success"):
                     if res.get("error") and verbose:
                         print(f"Error accessing {res['full_path']}: {res['error']}")
                     continue
-                
-                # Create DB Object
-                file_obj = File(
-                    host=hostname,
-                    path=res["dir_path"],
-                    filename=res["filename"],
-                    full_path=res["full_path"],
-                    extension=res["extension"],
-                    size=res["size"],
-                    modified=datetime.datetime.fromtimestamp(res["modified"]),
-                    created=datetime.datetime.fromtimestamp(res["created"]),
-                    md5_hash=res["md5_hash"],
-                    last_checked=datetime.datetime.now(),
-                    can_read=True,
-                )
-                
+
+                row = {
+                    "host": hostname,
+                    "path": res["dir_path"],
+                    "filename": res["filename"],
+                    "full_path": res["full_path"],
+                    "extension": res["extension"],
+                    "size": res["size"],
+                    "modified": datetime.datetime.fromtimestamp(res["modified"]),
+                    "created": datetime.datetime.fromtimestamp(res["created"]),
+                    "md5_hash": res["md5_hash"],
+                    "last_checked": datetime.datetime.now(),
+                    "can_read": True,
+                }
+
                 if verbose:
-                    print(file_obj)
-                    
-                session.merge(file_obj)
+                    print(f"File: {res['filename']} (Hash: {res['md5_hash']})")
+
+                batch.append(row)
                 total_processed += 1
-                pending_commits += 1
-                
+
                 if progress_callback:
                     progress_callback(res["filename"], total_processed)
 
-                # Commit in batches of 1000 to keep transaction size healthy
-                # Increased from 100 to reduce disk I/O blocking the main thread
-                if pending_commits >= 1000:
-                    session.commit()
-                    pending_commits = 0
+                if len(batch) >= 1000:
+                    _bulk_upsert_files(session, batch)
+                    batch = []
 
-            # Final commit
-            if pending_commits > 0:
-                session.commit()
+            if batch:
+                _bulk_upsert_files(session, batch)
 
     return total_processed
 
