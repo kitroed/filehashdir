@@ -396,11 +396,23 @@ class TUI:
         curses.noecho()
         return user_input
 
+    def _safe_addstr(self, y: int, x: int, text: str, attr: int = curses.A_NORMAL) -> None:
+        """Write text, clipped to the screen, silently skipping out-of-range rows."""
+        max_y, max_x = self.stdscr.getmaxyx()
+        if y < 0 or y >= max_y or x >= max_x:
+            return
+        clipped = text[: max(0, max_x - x - 1)]
+        try:
+            self.stdscr.addstr(y, x, clipped, attr)
+        except curses.error:
+            pass
+
     def _scan_wrapper(self):
         self.stdscr.clear()
-        self.stdscr.addstr(2, 2, "Enter directory to scan (default: .): ")
+        prompt = "Enter directory to scan (default: .): "
+        self.stdscr.addstr(2, 2, prompt)
         curses.echo()
-        path = self.stdscr.getstr(2, 40).decode("utf-8").strip()
+        path = self.stdscr.getstr(2, 2 + len(prompt)).decode("utf-8").strip()
         curses.noecho()
 
         if not path:
@@ -542,25 +554,31 @@ class TUI:
 
             while True:
                 self.stdscr.clear()
-                self.stdscr.addstr(1, 2, "Database Report", curses.A_BOLD)
+                # Refresh dimensions each draw so resize is handled
+                max_y, max_x = self.stdscr.getmaxyx()
+                # Reserve the bottom two lines for the help text
+                content_limit = max_y - 2
 
-                self.stdscr.addstr(3, 2, f"Total Files Stored: {data['total_files']}")
+                self._safe_addstr(1, 2, "Database Report", curses.A_BOLD)
+                self._safe_addstr(3, 2, f"Total Files Stored: {data['total_files']}")
 
                 size_mb = data["total_size"] / (1024 * 1024)
-                self.stdscr.addstr(4, 2, f"Total Size tracked: {size_mb:.2f} MB")
+                self._safe_addstr(4, 2, f"Total Size tracked: {size_mb:.2f} MB")
 
                 row = 6
-                self.stdscr.addstr(
+                self._safe_addstr(
                     row, 2, "--- Top 5 Largest Files ---", curses.A_UNDERLINE
                 )
                 row += 1
                 for f in data["largest_files"]:
+                    if row >= content_limit:
+                        break
                     sz_mb = (f.size or 0) / (1024 * 1024)
-                    self.stdscr.addstr(row, 4, f"{f.filename} ({sz_mb:.2f} MB)")
+                    self._safe_addstr(row, 4, f"{f.filename} ({sz_mb:.2f} MB)")
                     row += 1
 
                 row += 1
-                self.stdscr.addstr(
+                self._safe_addstr(
                     row,
                     2,
                     "--- Top 5 Duplicate Hashes (Select to view details) ---",
@@ -568,9 +586,10 @@ class TUI:
                 )
                 row += 1
 
-                duplicate_start_row = row
                 if data["duplicates"]:
                     for idx, d in enumerate(data["duplicates"]):
+                        if row >= content_limit:
+                            break
                         # d is (md5_hash, count, wasted_size)
                         wasted_mb = (d[2] or 0) / (1024 * 1024)
 
@@ -582,12 +601,12 @@ class TUI:
                         )
 
                         text = f"{prefix}Hash {d[0]}... : {d[1]} copies ({wasted_mb:.2f} MB total)"
-                        self.stdscr.addstr(row, 2, text, attr)
+                        self._safe_addstr(row, 2, text, attr)
                         row += 1
                 else:
-                    self.stdscr.addstr(row, 4, "No complete duplicates found.")
+                    self._safe_addstr(row, 4, "No complete duplicates found.")
 
-                self.stdscr.addstr(
+                self._safe_addstr(
                     max_y - 2,
                     2,
                     "Arrow Up/Down to select duplicates. Enter to view details. 'q' to return.",
