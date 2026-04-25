@@ -128,30 +128,34 @@ DEFAULT_IGNORE_DIRS = {
 DEFAULT_IGNORE_EXTS = {".pyc", ".o", ".tmp", ".swp", ".class"}
 
 
-def load_ignore_config(scan_path: str) -> tuple[set[str], set[str]]:
+def load_ignore_config(
+    scan_path: str, verbose: bool = False
+) -> tuple[set[str], set[str]]:
     """
     Load ignore rules from .filehashignore in the scan root.
     Returns (ignore_dirs, ignore_exts).
     """
     ignore_dirs = set(DEFAULT_IGNORE_DIRS)
     ignore_exts = set(DEFAULT_IGNORE_EXTS)
-    
+
     config_path = os.path.join(scan_path, ".filehashignore")
-    if os.path.exists(config_path) and os.path.isfile(config_path):
-        try:
-            with open(config_path, "r") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line or line.startswith("#"):
-                        continue
-                    
-                    if line.startswith("."):
-                        ignore_exts.add(line)
-                    else:
-                        ignore_dirs.add(line)
-        except Exception:
-            pass
-            
+    if not os.path.isfile(config_path):
+        return ignore_dirs, ignore_exts
+
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if line.startswith("."):
+                    ignore_exts.add(line)
+                else:
+                    ignore_dirs.add(line)
+    except OSError as e:
+        if verbose:
+            print(f"Warning: could not read {config_path}: {e}")
+
     return ignore_dirs, ignore_exts
 
 
@@ -191,7 +195,7 @@ def scan_and_hash_system(
 
     # Generator to yield file tasks
     def file_task_generator():
-        ignore_dirs, ignore_exts = load_ignore_config(path)
+        ignore_dirs, ignore_exts = load_ignore_config(path, verbose=verbose)
         
         for dir_path, dir_names, file_names in os.walk(path):
             # Modify dir_names in-place to skip ignored directories
