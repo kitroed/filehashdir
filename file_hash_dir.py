@@ -14,6 +14,7 @@ import socket
 import sys
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any, NoReturn
 
 from sqlalchemy import Boolean, DateTime, Integer, String, create_engine, func, desc
@@ -71,39 +72,47 @@ def get_file_hash(file_path: str) -> str:
         return hashlib.file_digest(f, "md5").hexdigest()
 
 
-def process_file_worker(args: tuple[str, str]) -> dict[str, Any]:
-    """
-    Worker function for multiprocessing. 
-    Args: (dir_path, file_name)
-    Returns: Dict with file data or error info.
-    """
+@dataclass(slots=True)
+class FileScanResult:
+    """Outcome of hashing a single file in a worker process."""
+
+    dir_path: str
+    filename: str
+    full_path: str
+    extension: str
+    success: bool = False
+    error: str | None = None
+    size: int | None = None
+    modified: float | None = None
+    created: float | None = None
+    md5_hash: str | None = None
+
+
+def process_file_worker(args: tuple[str, str]) -> FileScanResult:
+    """Worker function for multiprocessing — hashes one file."""
     dir_path, file_name = args
     full_path = os.path.join(dir_path, file_name)
-    
-    result = {
-        "dir_path": dir_path,
-        "filename": file_name,
-        "full_path": full_path,
-        "extension": os.path.splitext(file_name)[1],
-        "error": None
-    }
+    result = FileScanResult(
+        dir_path=dir_path,
+        filename=file_name,
+        full_path=full_path,
+        extension=os.path.splitext(file_name)[1],
+    )
 
     try:
-        # Check if file exists (it was found by os.walk but race conditions happen)
+        # os.walk found the file but it may have vanished since
         if not os.path.isfile(full_path):
             return result
 
         stat = os.stat(full_path)
-        result["size"] = stat.st_size
-        result["modified"] = stat.st_mtime
-        result["created"] = stat.st_ctime
-        result["md5_hash"] = get_file_hash(full_path)
-        result["success"] = True
-        
-    except (PermissionError, FileNotFoundError, OSError) as e:
-        result["error"] = str(e)
-        result["success"] = False
-        
+        result.size = stat.st_size
+        result.modified = stat.st_mtime
+        result.created = stat.st_ctime
+        result.md5_hash = get_file_hash(full_path)
+        result.success = True
+    except OSError as e:
+        result.error = str(e)
+
     return result
 
 
@@ -204,33 +213,33 @@ def scan_and_hash_system(
             batch: list[dict[str, Any]] = []
 
             for res in results:
-                if not res.get("success"):
-                    if res.get("error") and verbose:
-                        print(f"Error accessing {res['full_path']}: {res['error']}")
+                if not res.success:
+                    if res.error and verbose:
+                        print(f"Error accessing {res.full_path}: {res.error}")
                     continue
 
                 row = {
                     "host": hostname,
-                    "path": res["dir_path"],
-                    "filename": res["filename"],
-                    "full_path": res["full_path"],
-                    "extension": res["extension"],
-                    "size": res["size"],
-                    "modified": datetime.datetime.fromtimestamp(res["modified"], tz=datetime.UTC),
-                    "created": datetime.datetime.fromtimestamp(res["created"], tz=datetime.UTC),
-                    "md5_hash": res["md5_hash"],
+                    "path": res.dir_path,
+                    "filename": res.filename,
+                    "full_path": res.full_path,
+                    "extension": res.extension,
+                    "size": res.size,
+                    "modified": datetime.datetime.fromtimestamp(res.modified, tz=datetime.UTC),
+                    "created": datetime.datetime.fromtimestamp(res.created, tz=datetime.UTC),
+                    "md5_hash": res.md5_hash,
                     "last_checked": datetime.datetime.now(tz=datetime.UTC),
                     "can_read": True,
                 }
 
                 if verbose:
-                    print(f"File: {res['filename']} (Hash: {res['md5_hash']})")
+                    print(f"File: {res.filename} (Hash: {res.md5_hash})")
 
                 batch.append(row)
                 total_processed += 1
 
                 if progress_callback:
-                    progress_callback(res["filename"], total_processed)
+                    progress_callback(res.filename, total_processed)
 
                 if len(batch) >= 1000:
                     _bulk_upsert_files(session, batch)
