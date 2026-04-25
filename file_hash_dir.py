@@ -20,7 +20,39 @@ from typing import Any, NoReturn
 from sqlalchemy import Boolean, DateTime, Integer, String, create_engine, delete, desc, func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Dialect, Engine
+from sqlalchemy.types import TypeDecorator
+
+
+class UtcDateTime(TypeDecorator):
+    """DateTime that round-trips through SQLite as timezone-aware UTC.
+
+    SQLite has no native timezone type and SQLAlchemy's default storage
+    format drops the offset, so DateTime(timezone=True) returns naive
+    values. This decorator forces UTC on the way in and reattaches it
+    on the way out.
+    """
+
+    impl = DateTime
+    cache_ok = True
+
+    def process_bind_param(
+        self, value: datetime.datetime | None, dialect: Dialect
+    ) -> datetime.datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=datetime.UTC)
+        return value.astimezone(datetime.UTC)
+
+    def process_result_value(
+        self, value: datetime.datetime | None, dialect: Dialect
+    ) -> datetime.datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=datetime.UTC)
+        return value.astimezone(datetime.UTC)
 
 
 # --- Models ---
@@ -42,10 +74,10 @@ class File(Base):
     size: Mapped[int | None] = mapped_column(Integer)
     filename: Mapped[str | None] = mapped_column(String)
     extension: Mapped[str | None] = mapped_column(String)
-    modified: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
-    created: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
+    modified: Mapped[datetime.datetime | None] = mapped_column(UtcDateTime)
+    created: Mapped[datetime.datetime | None] = mapped_column(UtcDateTime)
     can_read: Mapped[bool | None] = mapped_column(Boolean)
-    last_checked: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
+    last_checked: Mapped[datetime.datetime | None] = mapped_column(UtcDateTime)
 
     def __repr__(self) -> str:
         """Return string representation of the File object."""
