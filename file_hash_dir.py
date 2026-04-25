@@ -107,7 +107,10 @@ def process_file_worker(args: tuple[str, str]) -> FileScanResult:
         stat = os.stat(full_path)
         result.size = stat.st_size
         result.modified = stat.st_mtime
-        result.created = stat.st_ctime
+        # st_birthtime is the real creation time on macOS/BSD and on Linux
+        # with statx-aware glibc; st_ctime is inode-change time, which is
+        # the best fallback elsewhere.
+        result.created = getattr(stat, "st_birthtime", stat.st_ctime)
         result.md5_hash = get_file_hash(full_path)
         result.success = True
     except OSError as e:
