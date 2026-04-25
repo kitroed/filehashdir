@@ -17,7 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, NoReturn
 
-from sqlalchemy import Boolean, DateTime, Integer, String, create_engine, func, desc
+from sqlalchemy import Boolean, DateTime, Integer, String, create_engine, delete, desc, func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 from sqlalchemy.engine import Engine
@@ -298,18 +298,29 @@ def prune_stale_records(verbose: bool = False) -> int:
     """Remove records from database for files that no longer exist on disk."""
     engine = get_db_engine()
     removed_count = 0
+    delete_batch_size = 1000
 
     with Session(engine) as session:
-        # We must iterate all files to check for existence.
-        # For huge DBs, this should be done in batches/yields, but simple approach for now.
-        all_files = session.query(File).all()
-        for file in all_files:
-            if not os.path.exists(file.full_path):
-                if verbose:
-                    print(f"Removing stale record: {file.full_path}")
-                session.delete(file)
-                removed_count += 1
+        stale: list[str] = []
 
+        def flush() -> None:
+            nonlocal removed_count
+            if not stale:
+                return
+            session.execute(delete(File).where(File.full_path.in_(stale)))
+            removed_count += len(stale)
+            stale.clear()
+
+        # Stream just the path column so memory stays bounded for large DBs
+        for full_path in session.scalars(select(File.full_path)).yield_per(5000):
+            if not os.path.exists(full_path):
+                if verbose:
+                    print(f"Removing stale record: {full_path}")
+                stale.append(full_path)
+                if len(stale) >= delete_batch_size:
+                    flush()
+
+        flush()
         session.commit()
     return removed_count
 
