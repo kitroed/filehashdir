@@ -262,26 +262,26 @@ def get_report_data() -> dict[str, Any]:
     """Query the database for summary statistics."""
     engine = get_db_engine()
     with Session(engine) as session:
-        total_files = session.scalar(func.count(File.full_path)) or 0
-        total_size = session.scalar(func.sum(File.size)) or 0
+        total_files = session.scalar(select(func.count()).select_from(File)) or 0
+        total_size = session.scalar(select(func.sum(File.size))) or 0
 
-        # Largest files
-        largest_files = session.query(File).order_by(desc(File.size)).limit(5).all()
+        largest_files = list(
+            session.scalars(select(File).order_by(desc(File.size)).limit(5))
+        )
 
         # Duplicate hashes (files with same content)
-        # Group by hash, having count > 1
-        duplicates_query = (
-            session.query(
+        wasted_size = func.sum(File.size).label("wasted_size")
+        duplicates = session.execute(
+            select(
                 File.md5_hash,
                 func.count(File.full_path).label("count"),
-                func.sum(File.size).label("wasted_size"),
+                wasted_size,
             )
             .group_by(File.md5_hash)
             .having(func.count(File.full_path) > 1)
-            .order_by(desc("wasted_size"))
+            .order_by(desc(wasted_size))
             .limit(5)
-        )
-        duplicates = duplicates_query.all()
+        ).all()
 
         return {
             "total_files": total_files,
@@ -295,7 +295,9 @@ def get_files_by_hash(md5_hash: str) -> list[File]:
     """Retrieve all files matching a specific hash."""
     engine = get_db_engine()
     with Session(engine) as session:
-        return session.query(File).filter(File.md5_hash == md5_hash).all()
+        return list(
+            session.scalars(select(File).where(File.md5_hash == md5_hash))
+        )
 
 
 def prune_stale_records(verbose: bool = False) -> int:
