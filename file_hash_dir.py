@@ -116,6 +116,22 @@ def process_file_worker(args: tuple[str, str]) -> FileScanResult:
     return result
 
 
+# --- Tuning constants ---
+
+# How many file paths each worker pulls from the queue at a time.
+# Higher reduces IPC overhead; lower keeps the progress UI responsive.
+WORKER_CHUNK_SIZE = 20
+
+# Rows accumulated before issuing a bulk upsert during a scan.
+SCAN_UPSERT_BATCH_SIZE = 1000
+
+# Stale paths accumulated before issuing a bulk DELETE during prune.
+PRUNE_DELETE_BATCH_SIZE = 1000
+
+# How many rows the prune scan streams from SQLite at a time.
+PRUNE_STREAM_YIELD = 5000
+
+
 DEFAULT_IGNORE_DIRS = {
     ".git",
     "__pycache__",
@@ -212,7 +228,11 @@ def scan_and_hash_system(
     # as soon as they complete, preventing large files from blocking the stream.
     with Session(engine) as session:
         with multiprocessing.Pool() as pool:
-            results = pool.imap_unordered(process_file_worker, file_task_generator(), chunksize=20)
+            results = pool.imap_unordered(
+                process_file_worker,
+                file_task_generator(),
+                chunksize=WORKER_CHUNK_SIZE,
+            )
 
             batch: list[dict[str, Any]] = []
 
@@ -245,7 +265,7 @@ def scan_and_hash_system(
                 if progress_callback:
                     progress_callback(res.filename, total_processed)
 
-                if len(batch) >= 1000:
+                if len(batch) >= SCAN_UPSERT_BATCH_SIZE:
                     _bulk_upsert_files(session, batch)
                     batch = []
 
@@ -304,7 +324,6 @@ def prune_stale_records(verbose: bool = False) -> int:
     """Remove records from database for files that no longer exist on disk."""
     engine = get_db_engine()
     removed_count = 0
-    delete_batch_size = 1000
 
     with Session(engine) as session:
         stale: list[str] = []
@@ -318,12 +337,13 @@ def prune_stale_records(verbose: bool = False) -> int:
             stale.clear()
 
         # Stream just the path column so memory stays bounded for large DBs
-        for full_path in session.scalars(select(File.full_path)).yield_per(5000):
+        path_stream = session.scalars(select(File.full_path)).yield_per(PRUNE_STREAM_YIELD)
+        for full_path in path_stream:
             if not os.path.exists(full_path):
                 if verbose:
                     print(f"Removing stale record: {full_path}")
                 stale.append(full_path)
-                if len(stale) >= delete_batch_size:
+                if len(stale) >= PRUNE_DELETE_BATCH_SIZE:
                     flush()
 
         flush()
