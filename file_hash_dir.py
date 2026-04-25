@@ -41,10 +41,10 @@ class File(Base):
     size: Mapped[int | None] = mapped_column(Integer)
     filename: Mapped[str | None] = mapped_column(String)
     extension: Mapped[str | None] = mapped_column(String)
-    modified: Mapped[datetime.datetime | None] = mapped_column(DateTime)
-    created: Mapped[datetime.datetime | None] = mapped_column(DateTime)
+    modified: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
+    created: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
     can_read: Mapped[bool | None] = mapped_column(Boolean)
-    last_checked: Mapped[datetime.datetime | None] = mapped_column(DateTime)
+    last_checked: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
 
     def __repr__(self) -> str:
         """Return string representation of the File object."""
@@ -68,14 +68,7 @@ def get_db_engine() -> Engine:
 def get_file_hash(file_path: str) -> str:
     """Calculate MD5 hash of a file efficiently."""
     with open(file_path, "rb") as f:
-        # Python 3.11+ preferred method
-        if hasattr(hashlib, "file_digest"):
-            return hashlib.file_digest(f, "md5").hexdigest()
-
-        digest = hashlib.md5()
-        while chunk := f.read(65536):
-            digest.update(chunk)
-        return digest.hexdigest()
+        return hashlib.file_digest(f, "md5").hexdigest()
 
 
 def process_file_worker(args: tuple[str, str]) -> dict[str, Any]:
@@ -223,10 +216,10 @@ def scan_and_hash_system(
                     "full_path": res["full_path"],
                     "extension": res["extension"],
                     "size": res["size"],
-                    "modified": datetime.datetime.fromtimestamp(res["modified"]),
-                    "created": datetime.datetime.fromtimestamp(res["created"]),
+                    "modified": datetime.datetime.fromtimestamp(res["modified"], tz=datetime.UTC),
+                    "created": datetime.datetime.fromtimestamp(res["created"], tz=datetime.UTC),
                     "md5_hash": res["md5_hash"],
-                    "last_checked": datetime.datetime.now(),
+                    "last_checked": datetime.datetime.now(tz=datetime.UTC),
                     "can_read": True,
                 }
 
