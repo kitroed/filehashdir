@@ -36,7 +36,7 @@ class File(Base):
     __tablename__ = "files"
 
     full_path: Mapped[str] = mapped_column(String, primary_key=True)
-    host: Mapped[str] = mapped_column(String(50))
+    host: Mapped[str] = mapped_column(String)
     md5_hash: Mapped[str] = mapped_column(String(32), index=True)
     path: Mapped[str | None] = mapped_column(String)
     size: Mapped[int | None] = mapped_column(Integer)
